@@ -1,4 +1,3 @@
-// server.js (compatible, Groq-backed)
 import express from "express";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
@@ -7,109 +6,98 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY; // set in Render
-const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_MODEL = "llama-3.1-8b-instant"; // change if you want a different Groq model
-
-// Helper: ensure we have messages array for chat
-function ensureMessages(body) {
-  if (body.messages && Array.isArray(body.messages)) return body.messages;
-  if (body.prompt && typeof body.prompt === "string") {
-    return [{ role: "user", content: body.prompt }];
-  }
-  // fallback: if user sent { text: "..." }
-  if (body.text && typeof body.text === "string") {
-    return [{ role: "user", content: body.text }];
-  }
-  return [];
-}
-
-// Chat endpoint
-app.post("/chat", async (req, res) => {
+// Utility function to call Groq
+async function callGroq(prompt, systemMsg = "You are a helpful AI assistant.") {
   try {
-    const messages = ensureMessages(req.body);
-    if (messages.length === 0) {
-      return res.status(400).json({ error: "No prompt/messages provided" });
-    }
-
-    const model = req.body.model || DEFAULT_MODEL;
-    const payload = {
-      model,
-      messages,
-      // optional tuning
-      max_tokens: req.body.max_tokens || 800,
-      temperature: req.body.temperature ?? 0.7,
-    };
-
-    const r = await fetch(GROQ_ENDPOINT, {
+    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${GROQ_API_KEY}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    const data = await r.json();
-    // return raw Groq response to client (maintains OpenAI-like shape)
-    return res.status(r.status).json(data);
-  } catch (err) {
-    console.error("Error /chat:", err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// MCQ generator endpoint (simple wrapper)
-app.post("/mcq", async (req, res) => {
-  try {
-    const topic = req.body.topic || req.body.prompt || "";
-    const count = req.body.count || 5;
-    if (!topic) return res.status(400).json({ error: "topic required" });
-
-    const prompt = `
-Generate ${count} multiple-choice questions about "${topic}".
-Return as a JSON array. Each object must have:
-"type":"MCQ","question":"...","options":["..."],"answer_index": 0
-Return ONLY valid JSON.
-`;
-
-    const r = await fetch(GROQ_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 1000,
-        temperature: 0.7,
+        model: "llama-3.1-70b-versatile",  // stable Groq model
+        messages: [
+          { role: "system", content: systemMsg },
+          { role: "user", content: prompt }
+        ],
       }),
     });
 
-    const data = await r.json();
-    // Groq may return text in choices[0].message.content similar to OpenAI
-    const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || data.choices?.[0]?.text || "";
+    const data = await groqRes.json();
 
-    // try to parse JSON from raw
-    try {
-      const parsed = JSON.parse(raw);
-      return res.json(parsed);
-    } catch (parseErr) {
-      // If parsing fails, return raw text so client can attempt fallback parsing
-      return res.json({ raw });
+    if (!groqRes.ok) {
+      throw new Error(JSON.stringify(data));
     }
+
+    return data.choices[0].message.content;
   } catch (err) {
-    console.error("Error /mcq:", err);
-    return res.status(500).json({ error: err.message });
+    console.error("Groq API Error:", err.message);
+    throw err;
+  }
+}
+
+// Generic AI chat
+app.post("/ask", async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    const reply = await callGroq(prompt);
+    res.json({ reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, ts: Date.now() });
+// SendMessage endpoint
+app.post("/sendmessage", async (req, res) => {
+  try {
+    const { message } = req.body;
+    const reply = await callGroq(message);
+    res.json({ reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Proxy running on port ${PORT}`);
+// Voice doubt AI (special system message)
+app.post("/voicedoubt", async (req, res) => {
+  try {
+    const { question } = req.body;
+    const reply = await callGroq(question, "You are a teacher helping students clear doubts with simple answers.");
+    res.json({ reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
+
+// Competitive prep AI
+app.post("/competitive", async (req, res) => {
+  try {
+    const { topic } = req.body;
+    const reply = await callGroq(topic, "You are a competitive exam coach giving detailed step-by-step solutions.");
+    res.json({ reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Quiz generator
+app.post("/quiz", async (req, res) => {
+  try {
+    const { subject } = req.body;
+    const prompt = `Generate 5 multiple choice questions with 4 options each and correct answers for ${subject}. Format as JSON.`;
+    const reply = await callGroq(prompt, "You are a quiz generator AI.");
+    res.json({ quiz: reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Health check (for Render)
+app.get("/", (req, res) => {
+  res.send("✅ DMR Proxy Server is running with Groq AI!");
+});
+
+// Render requires PORT
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
